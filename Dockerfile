@@ -1,22 +1,23 @@
-# install system deps (ffmpeg + chromaprint-tools + minimal libs)
+FROM python:3.11-slim
+
+# Install dependencies
 RUN apt-get update && apt-get install -y \
     ffmpeg \
     chromaprint-tools \
     gcc \
     libmagic1 \
- && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/*
 
+# Copy app code
+COPY . /app
 WORKDIR /app
 
-# copy python deps and install
-COPY requirements.txt .
+# Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# copy the app
-COPY app.py .
+# Run the app
+CMD ["python", "app.py"]
 
-# port used by Render
-ENV PORT 8080
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app", "--timeout", "120"]
+
 
 
