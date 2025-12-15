@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     gcc \
     libmagic1 \
-    chromaprint-tools \
+    libchromaprint-tools \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -18,6 +18,8 @@ COPY . .
 EXPOSE 8080
 
 CMD ["gunicorn", "-b", "0.0.0.0:8080", "app:app"]
+
+
 
 
 
