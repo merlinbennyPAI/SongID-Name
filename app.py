@@ -1,67 +1,111 @@
-import os, subprocess, json, tempfile
+import os
+import subprocess
+import json
+import tempfile
 from flask import Flask, request, jsonify
 
-ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY")  # set this on Render as a secret
+# Read AcoustID API key from environment (set in Render)
+ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY")
 
 app = Flask(__name__)
 
+# Health check / root endpoint (required for MCP & platform validation)
+@app.route("/", methods=["GET"])
+def home():
+    return jsonify({
+        "status": "ok",
+        "service": "Song Identification API",
+        "endpoint": "/identify-song",
+        "method": "POST"
+    }), 200
+
+
+# Main song identification endpoint
 @app.route("/identify-song", methods=["POST"])
 def identify_song():
-    # Accept file via multipart/form-data 'file'
-    if 'file' in request.files:
-        f = request.files['file']
-        infile = tempfile.NamedTemporaryFile(delete=False, suffix=".input")
-        f.save(infile.name)
-        infile_path = infile.name
-    else:
-        return jsonify({"error":"no_file_provided"}), 400
+    # Expect audio file via multipart/form-data with key "file"
+    if "file" not in request.files:
+        return jsonify({"error": "no_file_provided"}), 400
 
-    # convert to wav mono 44100 using ffmpeg
+    f = request.files["file"]
+
+    infile = tempfile.NamedTemporaryFile(delete=False, suffix=".input")
+    f.save(infile.name)
+    infile_path = infile.name
+
+    # Convert input audio to WAV mono 44.1kHz using ffmpeg
     wav_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
-    ffmpeg_cmd = ["ffmpeg", "-y", "-i", infile_path, "-ac", "1", "-ar", "44100", "-vn", wav_path]
+    ffmpeg_cmd = [
+        "ffmpeg", "-y",
+        "-i", infile_path,
+        "-ac", "1",
+        "-ar", "44100",
+        "-vn",
+        wav_path
+    ]
+
     try:
         subprocess.check_output(ffmpeg_cmd, stderr=subprocess.STDOUT)
     except subprocess.CalledProcessError as e:
-        return jsonify({"error":"ffmpeg_failed","detail": e.output.decode(errors='ignore')}), 500
+        return jsonify({
+            "error": "ffmpeg_failed",
+            "detail": e.output.decode(errors="ignore")
+        }), 500
 
-    # run fpcalc to get fingerprint (json)
+    # Generate fingerprint using fpcalc (Chromaprint)
     try:
-        fp_output = subprocess.check_output(["fpcalc", "-json", wav_path], stderr=subprocess.DEVNULL)
+        fp_output = subprocess.check_output(
+            ["fpcalc", "-json", wav_path],
+            stderr=subprocess.DEVNULL
+        )
         fp_json = json.loads(fp_output)
         fingerprint = fp_json.get("fingerprint")
         duration = int(fp_json.get("duration", 0))
     except Exception as e:
-        return jsonify({"error":"fpcalc_failed","detail": str(e)}), 500
+        return jsonify({
+            "error": "fpcalc_failed",
+            "detail": str(e)
+        }), 500
 
-    # call AcoustID lookup
+    # Ensure AcoustID key is available
     if not ACOUSTID_KEY:
-        return jsonify({"error":"missing_acoustid_key"}), 500
+        return jsonify({"error": "missing_acoustid_key"}), 500
 
+    # Query AcoustID API
     import requests
+
     params = {
         "client": ACOUSTID_KEY,
         "fingerprint": fingerprint,
         "duration": duration,
         "meta": "recordings+releases+releasegroups+tracks"
     }
+
     try:
-        r = requests.get("https://api.acoustid.org/v2/lookup", params=params, timeout=30)
+        r = requests.get(
+            "https://api.acoustid.org/v2/lookup",
+            params=params,
+            timeout=30
+        )
         res = r.json()
     except Exception as e:
-        return jsonify({"error":"acoustid_request_failed","detail": str(e)}), 500
+        return jsonify({
+            "error": "acoustid_request_failed",
+            "detail": str(e)
+        }), 500
 
-    # parse best match
+    # Parse best match
     results = res.get("results", [])
     if not results:
-        return jsonify({"status":"no_match"}), 200
+        return jsonify({"status": "no_match"}), 200
 
     best = max(results, key=lambda x: x.get("score", 0))
     score = best.get("score", 0)
 
-    # extract title/artist from recordings if present
     title = None
     artist = None
     mbid = None
+
     recordings = best.get("recordings", [])
     if recordings:
         rec = recordings[0]
@@ -72,8 +116,8 @@ def identify_song():
             artist = artists[0].get("name")
 
     return jsonify({
-        "status":"ok",
-        "method":"fingerprint",
+        "status": "ok",
+        "method": "fingerprint",
         "score": score,
         "title": title,
         "artist": artist,
@@ -81,5 +125,10 @@ def identify_song():
         "raw": res
     }), 200
 
+
+# Start Flask app (Render uses the PORT environment variable)
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT",8080)))
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+
