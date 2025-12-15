@@ -4,44 +4,38 @@ import json
 import tempfile
 from flask import Flask, request, jsonify
 
-# Read AcoustID API key from environment (set in Render)
 ACOUSTID_KEY = os.environ.get("ACOUSTID_KEY")
 
 app = Flask(__name__)
 
-# Health check / root endpoint (required for MCP & platform validation)
+# Health / sanity check route
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({
-        "status": "ok",
-        "service": "Song Identification API",
-        "endpoint": "/identify-song",
-        "method": "POST"
-    }), 200
+        "status": "SongID API running",
+        "endpoints": {
+            "identify": "POST /identify-song"
+        }
+    })
 
-
-# Main song identification endpoint
 @app.route("/identify-song", methods=["POST"])
 def identify_song():
-    # Expect audio file via multipart/form-data with key "file"
+    # Check file
     if "file" not in request.files:
         return jsonify({"error": "no_file_provided"}), 400
 
     f = request.files["file"]
 
+    # Save uploaded file
     infile = tempfile.NamedTemporaryFile(delete=False, suffix=".input")
     f.save(infile.name)
     infile_path = infile.name
 
-    # Convert input audio to WAV mono 44.1kHz using ffmpeg
+    # Convert to wav
     wav_path = tempfile.NamedTemporaryFile(delete=False, suffix=".wav").name
     ffmpeg_cmd = [
-        "ffmpeg", "-y",
-        "-i", infile_path,
-        "-ac", "1",
-        "-ar", "44100",
-        "-vn",
-        wav_path
+        "ffmpeg", "-y", "-i", infile_path,
+        "-ac", "1", "-ar", "44100", "-vn", wav_path
     ]
 
     try:
@@ -52,7 +46,7 @@ def identify_song():
             "detail": e.output.decode(errors="ignore")
         }), 500
 
-    # Generate fingerprint using fpcalc (Chromaprint)
+    # Generate fingerprint
     try:
         fp_output = subprocess.check_output(
             ["fpcalc", "-json", wav_path],
@@ -67,11 +61,10 @@ def identify_song():
             "detail": str(e)
         }), 500
 
-    # Ensure AcoustID key is available
     if not ACOUSTID_KEY:
         return jsonify({"error": "missing_acoustid_key"}), 500
 
-    # Query AcoustID API
+    # Query AcoustID
     import requests
 
     params = {
@@ -94,19 +87,15 @@ def identify_song():
             "detail": str(e)
         }), 500
 
-    # Parse best match
     results = res.get("results", [])
     if not results:
         return jsonify({"status": "no_match"}), 200
 
     best = max(results, key=lambda x: x.get("score", 0))
-    score = best.get("score", 0)
 
-    title = None
-    artist = None
-    mbid = None
-
+    title = artist = mbid = None
     recordings = best.get("recordings", [])
+
     if recordings:
         rec = recordings[0]
         title = rec.get("title")
@@ -118,17 +107,11 @@ def identify_song():
     return jsonify({
         "status": "ok",
         "method": "fingerprint",
-        "score": score,
+        "score": best.get("score", 0),
         "title": title,
         "artist": artist,
-        "musicbrainz_id": mbid,
-        "raw": res
+        "musicbrainz_id": mbid
     }), 200
 
-
-# Start Flask app (Render uses the PORT environment variable)
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    app.run(host="0.0.0.0", port=port)
 
 
